@@ -1,10 +1,10 @@
 const fs = require('fs');
 
 const DB_FILENAME = 'users.jsonl';
-const IDX_FILENAME = 'users.idx'; // Fast Boot ke liye Index file
+const IDX_FILENAME = 'users.idx'; 
 
 // ==========================================
-// 1. NODE CLASS (Tree ka Dabba)
+// 1. NODE CLASS
 // ==========================================
 class Node {
     constructor(id, filePosition) {
@@ -16,30 +16,25 @@ class Node {
 }
 
 // ==========================================
-// 2. INDEX TREE (RAM Logic + Save/Load)
+// 2. INDEX TREE
 // ==========================================
 class IndexTree {
     constructor() {
         this.root = null;
     }
 
-    // --- Insert Logic ---
     insert(id, filePosition) {
         const newNode = new Node(id, filePosition);
-
         if (this.root === null) {
             this.root = newNode;
             return;
         }
-
         let current = this.root;
         while (true) {
-            // Case 1: ID pehle se hai (Update Pointer)
             if (id === current.id) {
                 current.filePosition = filePosition;
                 return;
             }
-            // Case 2: Left ya Right jao
             if (id < current.id) {
                 if (current.left === null) {
                     current.left = newNode;
@@ -56,7 +51,6 @@ class IndexTree {
         }
     }
 
-    // --- Find Logic ---
     findPosition(id) {
         let current = this.root;
         while (current) {
@@ -67,21 +61,18 @@ class IndexTree {
         return null;
     }
 
-    // --- SNAPSHOT: Tree to Array (Save karne ke liye) ---
     toArray() {
         const result = [];
-        // In-Order Traversal (Sorted: Small ID -> Big ID)
         function traverse(node) {
             if (!node) return;
-            traverse(node.left); // Pehle chhote IDs
-            result.push({ i: node.id, p: node.filePosition }); // Fir khud
-            traverse(node.right); // Fir bade IDs
+            traverse(node.left);
+            result.push({ i: node.id, p: node.filePosition });
+            traverse(node.right);
         }
         traverse(this.root);
         return result;
     }
 
-    // --- SNAPSHOT: Array to Tree (Load karne ke liye) ---
     fromArray(list) {
         this.root = null;
         for (const item of list) {
@@ -97,34 +88,32 @@ class GigaDB {
     constructor() {
         this.index = new IndexTree();
 
-        // STARTUP LOGIC:
-        // 1. Pehle dekho Index File hai kya? (Fast Boot)
         if (fs.existsSync(IDX_FILENAME)) {
             console.log("⚡ Fast Boot: Loading Index from 'users.idx'...");
             const rawData = fs.readFileSync(IDX_FILENAME, 'utf8');
             const list = JSON.parse(rawData);
             this.index.fromArray(list);
         }
-        // 2. Agar Index nahi hai par Data hai (Crash Recovery)
         else if (fs.existsSync(DB_FILENAME)) {
             console.log("⚠️ Index missing. Rebuilding from Data file...");
             this.rebuildIndex();
             this.saveIndex();
         }
-        // 3. Bilkul New Start
         else {
             fs.writeFileSync(DB_FILENAME, '');
             console.log("🔥 New Database Created.");
+            
+            // --- AUTO SEED MAGIC 🪄 ---
+            // Agar database naya hai, to turant 1000 data bhar do
+            this.seed(1000);
         }
     }
 
-    // --- Helper: Save Index to Disk ---
     saveIndex() {
         const list = this.index.toArray();
         fs.writeFileSync(IDX_FILENAME, JSON.stringify(list));
     }
 
-    // --- Helper: Rebuild Index (Slow scan) ---
     rebuildIndex() {
         const content = fs.readFileSync(DB_FILENAME, 'utf8');
         const lines = content.split('\n');
@@ -140,7 +129,40 @@ class GigaDB {
         });
     }
 
-    // --- CREATE (Insert Dynamic Object) ---
+    // --- NEW: BULK SEED FUNCTION 🌱 ---
+    seed(count) {
+        console.log(`🚀 Starting Seed: Inserting ${count} records...`);
+        console.time("seedTime");
+
+        // Loop chalayenge
+        for (let i = 1; i <= count; i++) {
+            
+            // 1. Fake Data Banao
+            const user = {
+                id: i,
+                name: `User_${i}`,
+                role: i % 10 === 0 ? "Admin" : "User", // Har 10th banda Admin
+                bio: `This is an auto-generated bio for User number ${i}.`
+            };
+
+            // 2. Direct Write (Fast)
+            const stats = fs.statSync(DB_FILENAME);
+            const pos = stats.size;
+            
+            const str = JSON.stringify(user) + '\n';
+            fs.appendFileSync(DB_FILENAME, str);
+
+            // 3. RAM Index Update
+            this.index.insert(i, pos);
+        }
+
+        // 4. Sab hone ke baad EK BAAR Index save karo (Super Fast)
+        this.saveIndex();
+        
+        console.timeEnd("seedTime");
+        console.log("✅ Seeding Complete!");
+    }
+
     insert(userData) {
         if (!userData.id) throw new Error("ID is required");
         const id = parseInt(userData.id);
@@ -152,13 +174,12 @@ class GigaDB {
         fs.appendFileSync(DB_FILENAME, dataStr);
 
         this.index.insert(id, filePosition);
-        this.saveIndex(); // Index bhi save kar lo
+        this.saveIndex();
         
         console.log(`✅ Saved ID: ${id}`);
         return userData;
     }
 
-    // --- UPDATE (Append Only) ---
     update(id, newUserData) {
         id = parseInt(id);
         const oldPos = this.index.findPosition(id);
@@ -167,7 +188,6 @@ class GigaDB {
         const stats = fs.statSync(DB_FILENAME);
         const newPosition = stats.size;
 
-        // ID maintain karna zaroori hai
         const finalData = { ...newUserData, id: id };
         const dataStr = JSON.stringify(finalData) + '\n';
         
@@ -179,7 +199,6 @@ class GigaDB {
         return finalData;
     }
 
-    // --- READ (Find Single) ---
     find(id) {
         id = parseInt(id);
         const position = this.index.findPosition(id);
@@ -198,37 +217,25 @@ class GigaDB {
         }
     }
 
-    // --- NEW: PAGINATION (List 100 Users) ---
     getMany(page = 1, limit = 100) {
-        // 1. RAM se saare IDs le ao (Sorted)
         const allNodes = this.index.toArray(); 
-
-        // 2. Math lagao (Kahan se kahan tak chahiye)
         const startIndex = (page - 1) * limit;
         const endIndex = startIndex + limit;
-        
-        // Sirf utne nodes uthao (Slice)
         const targetNodes = allNodes.slice(startIndex, endIndex);
 
-        // 3. Disk se Data padho
         const results = [];
         const fd = fs.openSync(DB_FILENAME, 'r');
-        const buffer = Buffer.alloc(10000); // Thoda bada buffer safe side ke liye
+        const buffer = Buffer.alloc(10000);
 
         for (const node of targetNodes) {
             try {
-                // Har node ki position par jump maro
                 fs.readSync(fd, buffer, 0, 10000, node.p);
                 const str = buffer.toString('utf8').split('\n')[0];
                 results.push(JSON.parse(str));
-            } catch (e) {
-                // Agar koi data corrupt hai to skip karo
-            }
+            } catch (e) { }
         }
-        
         fs.closeSync(fd);
 
-        // Frontend ke liye pura package return karo
         return {
             data: results,
             total: allNodes.length,
