@@ -3,32 +3,29 @@ const GigaDB = require('./database');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+
+// --- CRITICAL FIX FOR RENDER/CLOUD ---
+// Agar Cloud ne Port diya hai to wo lo, nahi to 3000
+const PORT = process.env.PORT || 3000; 
+
 const db = new GigaDB();
 
 // 1. EJS Setup
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
-// 2. Middleware (Form Data Padhne ke liye)
-app.use(express.urlencoded({ extended: true })); // HTML Forms ke liye zaroori hai
+// 2. Middleware
+app.use(express.urlencoded({ extended: true })); 
 app.use(express.json());
 
 // --- ROUTES ---
 
-// A. LIST ALL USERS (Home Page)
+// A. LIST ALL USERS
 app.get('/', (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = 100;
-    
-    // DB se 100 users mango
     const result = db.getMany(page, limit);
-    
-    // index.ejs render karo data ke sath
-    res.render('index', { 
-        users: result.data, 
-        pagination: result 
-    });
+    res.render('index', { users: result.data, pagination: result });
 });
 
 // B. SHOW CREATE FORM
@@ -40,7 +37,7 @@ app.get('/new', (req, res) => {
 app.post('/save', (req, res) => {
     const { id, name, bio, role } = req.body;
     db.insert({ id, name, bio, role });
-    res.redirect('/'); // Wapas home page bhejo
+    res.redirect('/'); 
 });
 
 // D. SHOW SINGLE USER
@@ -60,12 +57,11 @@ app.get('/edit/:id', (req, res) => {
 // F. ACTION: UPDATE USER
 app.post('/update/:id', (req, res) => {
     const { name, bio, role } = req.body;
-    const id = req.params.id; // URL se ID lo
-    
+    const id = req.params.id; 
     db.update(id, { name, bio, role });
-    res.redirect(`/user/${id}`); // User ki profile pe bhejo
+    res.redirect(`/user/${id}`); 
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 Frontend running at http://localhost:${PORT}`);
+    console.log(`🚀 Server running on Port: ${PORT}`);
 });
