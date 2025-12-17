@@ -256,7 +256,7 @@ app.post('/users', (req, res) => {
 });
 
 // 4. UPDATE USER (With Time)
-app.put('/users/:id', (req, res) => {
+app.put('/:id', (req, res) => {
     const start = process.hrtime(); // ⏱️ Start
 
     try {
