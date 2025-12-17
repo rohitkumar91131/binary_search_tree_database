@@ -1,11 +1,17 @@
 const fs = require('fs');
+const express = require('express');
+const path = require('path');
 
+// --- CONFIGURATION ---
 const DB_FILENAME = 'users.jsonl';
-const IDX_FILENAME = 'users.idx'; 
+const IDX_FILENAME = 'users.idx';
+const PORT = process.env.PORT || 3000; // Cloud Ready Port
 
 // ==========================================
-// 1. NODE CLASS
+// PART 1: THE DATABASE ENGINE (GigaDB)
 // ==========================================
+
+// 1. NODE CLASS
 class Node {
     constructor(id, filePosition) {
         this.id = id;
@@ -15,9 +21,7 @@ class Node {
     }
 }
 
-// ==========================================
-// 2. INDEX TREE
-// ==========================================
+// 2. INDEX TREE CLASS
 class IndexTree {
     constructor() {
         this.root = null;
@@ -81,18 +85,22 @@ class IndexTree {
     }
 }
 
-// ==========================================
 // 3. MAIN GIGADB CLASS
-// ==========================================
 class GigaDB {
     constructor() {
         this.index = new IndexTree();
 
+        // Startup Logic
         if (fs.existsSync(IDX_FILENAME)) {
             console.log("⚡ Fast Boot: Loading Index from 'users.idx'...");
             const rawData = fs.readFileSync(IDX_FILENAME, 'utf8');
-            const list = JSON.parse(rawData);
-            this.index.fromArray(list);
+            try {
+                const list = JSON.parse(rawData);
+                this.index.fromArray(list);
+            } catch (e) {
+                console.log("⚠️ Index corrupted, rebuilding...");
+                this.rebuildIndex();
+            }
         }
         else if (fs.existsSync(DB_FILENAME)) {
             console.log("⚠️ Index missing. Rebuilding from Data file...");
@@ -102,9 +110,7 @@ class GigaDB {
         else {
             fs.writeFileSync(DB_FILENAME, '');
             console.log("🔥 New Database Created.");
-            
-            // --- AUTO SEED MAGIC 🪄 ---
-            // Agar database naya hai, to turant 1000 data bhar do
+            // Auto Seed for demo
             this.seed(1000);
         }
     }
@@ -129,53 +135,34 @@ class GigaDB {
         });
     }
 
-    // --- NEW: BULK SEED FUNCTION 🌱 ---
     seed(count) {
         console.log(`🚀 Starting Seed: Inserting ${count} records...`);
-        console.time("seedTime");
-
-        // Loop chalayenge
         for (let i = 1; i <= count; i++) {
-            
-            // 1. Fake Data Banao
             const user = {
                 id: i,
                 name: `User_${i}`,
-                role: i % 10 === 0 ? "Admin" : "User", // Har 10th banda Admin
-                bio: `This is an auto-generated bio for User number ${i}.`
+                role: i % 10 === 0 ? "Admin" : "User",
+                bio: `Auto-generated bio for User ${i}.`
             };
-
-            // 2. Direct Write (Fast)
             const stats = fs.statSync(DB_FILENAME);
             const pos = stats.size;
-            
             const str = JSON.stringify(user) + '\n';
             fs.appendFileSync(DB_FILENAME, str);
-
-            // 3. RAM Index Update
             this.index.insert(i, pos);
         }
-
-        // 4. Sab hone ke baad EK BAAR Index save karo (Super Fast)
         this.saveIndex();
-        
-        console.timeEnd("seedTime");
         console.log("✅ Seeding Complete!");
     }
 
     insert(userData) {
         if (!userData.id) throw new Error("ID is required");
         const id = parseInt(userData.id);
-
         const stats = fs.statSync(DB_FILENAME);
         const filePosition = stats.size;
-
         const dataStr = JSON.stringify(userData) + '\n';
         fs.appendFileSync(DB_FILENAME, dataStr);
-
         this.index.insert(id, filePosition);
         this.saveIndex();
-        
         console.log(`✅ Saved ID: ${id}`);
         return userData;
     }
@@ -184,17 +171,13 @@ class GigaDB {
         id = parseInt(id);
         const oldPos = this.index.findPosition(id);
         if (oldPos === null) return null;
-
         const stats = fs.statSync(DB_FILENAME);
         const newPosition = stats.size;
-
         const finalData = { ...newUserData, id: id };
         const dataStr = JSON.stringify(finalData) + '\n';
-        
         fs.appendFileSync(DB_FILENAME, dataStr);
         this.index.insert(id, newPosition);
         this.saveIndex();
-
         console.log(`🔄 Updated ID: ${id}`);
         return finalData;
     }
@@ -203,18 +186,14 @@ class GigaDB {
         id = parseInt(id);
         const position = this.index.findPosition(id);
         if (position === null) return null;
-
         const fd = fs.openSync(DB_FILENAME, 'r');
         const buffer = Buffer.alloc(5000);
         fs.readSync(fd, buffer, 0, 5000, position);
         fs.closeSync(fd);
-
         try {
             const str = buffer.toString('utf8').split('\n')[0];
             return JSON.parse(str);
-        } catch (e) {
-            return null;
-        }
+        } catch (e) { return null; }
     }
 
     getMany(page = 1, limit = 100) {
@@ -222,11 +201,9 @@ class GigaDB {
         const startIndex = (page - 1) * limit;
         const endIndex = startIndex + limit;
         const targetNodes = allNodes.slice(startIndex, endIndex);
-
         const results = [];
         const fd = fs.openSync(DB_FILENAME, 'r');
         const buffer = Buffer.alloc(10000);
-
         for (const node of targetNodes) {
             try {
                 fs.readSync(fd, buffer, 0, 10000, node.p);
@@ -235,7 +212,6 @@ class GigaDB {
             } catch (e) { }
         }
         fs.closeSync(fd);
-
         return {
             data: results,
             total: allNodes.length,
@@ -245,4 +221,80 @@ class GigaDB {
     }
 }
 
-module.exports = GigaDB;
+// ==========================================
+// PART 2: THE SERVER LOGIC (Express + EJS)
+// ==========================================
+
+const app = express();
+
+// Initialize Database
+const db = new GigaDB();
+
+// EJS Setup
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+
+// Middleware
+app.use(express.urlencoded({ extended: true })); 
+app.use(express.json());
+
+// --- ROUTES ---
+
+// A. List Users
+app.get('/', (req, res) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = 100;
+    const result = db.getMany(page, limit);
+    res.render('index', { users: result.data, pagination: result });
+});
+
+// B. Show Create Form
+app.get('/new', (req, res) => {
+    res.render('form', { user: null, mode: 'Create' });
+});
+
+// C. Insert Action
+app.post('/save', (req, res) => {
+    const { id, name, bio, role } = req.body;
+    db.insert({ id, name, bio, role });
+    res.redirect('/');
+});
+
+// D. Show Single User
+app.get('/user/:id', (req, res) => {
+    const user = db.find(req.params.id);
+    if (!user) return res.send("User Not Found");
+    res.render('show', { user });
+});
+
+// E. Show Edit Form
+app.get('/edit/:id', (req, res) => {
+    const user = db.find(req.params.id);
+    if (!user) return res.send("User Not Found");
+    res.render('form', { user: user, mode: 'Update' });
+});
+
+// F. Update Action
+app.post('/update/:id', (req, res) => {
+    const { name, bio, role } = req.body;
+    const id = req.params.id; 
+    db.update(id, { name, bio, role });
+    res.redirect(`/user/${id}`);
+});
+
+// START SERVER
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on Port: ${PORT}`);
+});
+
+// ... (Upar app.listen code hai)
+
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on Port: ${PORT}`);
+});
+
+// --- 👇 YE NEW CODE ADD KARO (Jugaad) 👇 ---
+// Ye server ko force karega zinda rehne ke liye
+setInterval(() => {
+    console.log("❤️ Server Heartbeat: I am alive");
+}, 1000 ); // Har 1 ghante me bas ping karega (Background process)
